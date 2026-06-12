@@ -1,0 +1,14 @@
+# local tooling / session config
+.claude/
+
+# archived pre-rebuild version, kept locally only
+legacy_v1/
+
+# python
+__pycache__/
+*.pyc
+
+# misc
+*.stl
+Thumbs.db
+.DS_Store

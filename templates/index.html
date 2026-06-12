@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BIT Builder</title>
+<link rel="stylesheet" href="/static/css/style.css">
+<script type="importmap">
+{ "imports": {
+    "three": "/static/vendor/three.module.js",
+    "three/addons/": "/static/vendor/"
+} }
+</script>
+<script src="/static/vendor/vue.global.prod.js"></script>
+</head>
+<body>
+<div id="app" v-cloak class="app">
+
+  <!-- ── Header ─────────────────────────────────────────────────────────── -->
+  <header class="hdr">
+    <div class="brand">⬡ BIT Builder</div>
+    <input v-model="project.name" class="pname" placeholder="Project name">
+    <div class="osd" :title="openscad ? openscadPath : 'Install OpenSCAD from openscad.org for STL export'">
+      <span class="dot" :class="openscad === null ? 'chk' : openscad ? 'ok' : 'bad'"></span>
+      {{ openscad === null ? 'Checking…' : openscad ? 'OpenSCAD ready' : 'OpenSCAD missing' }}
+    </div>
+    <div class="acts">
+      <button class="btn" @click="resetProject">New</button>
+      <button class="btn" @click="loadProject">Load</button>
+      <button class="btn" @click="saveProject">Save</button>
+      <button class="btn" @click="showScad = !showScad">{{ showScad ? 'Hide' : 'View' }} SCAD</button>
+      <button class="btn out" @click="downloadScad">⬇ SCAD</button>
+      <button class="btn pri" @click="exportStl" :disabled="exporting || !openscad">
+        {{ exporting ? '⏳ Rendering…' : '▶ Export STL' }}</button>
+    </div>
+  </header>
+
+  <div class="body">
+    <!-- ── Sidebar ─────────────────────────────────────────────────────── -->
+    <aside class="side">
+      <div class="tree">
+        <div class="ti" :class="{ on: sel.pane === 'settings' }" @click="selSettings">⚙ Global settings</div>
+        <div class="sec-lbl">Compartments</div>
+        <div v-for="box in project.boxes" :key="box.id">
+          <div class="ti" :class="{ on: sel.boxId === box.id && sel.pane === 'box', dis: box.enabled === false }"
+               @click="selBoxPane(box.id)">
+            <span class="tw" @click.stop="expanded[box.id] = !expanded[box.id]">{{ expanded[box.id] ? '▾' : '▸' }}</span>
+            <span class="tn">{{ box.name }}</span>
+            <span class="badge" :class="'t-' + box.type.toLowerCase()">{{ box.type }}</span>
+            <button class="x" @click.stop="dupBox(box)" title="Duplicate">⧉</button>
+            <button class="x" @click.stop="rmBox(box.id)" title="Delete">✕</button>
+          </div>
+          <div v-if="expanded[box.id]" class="kids">
+            <div v-if="hasLid(box) && !box.no_lid" class="ti k" :class="{ on: sel.boxId === box.id && sel.pane === 'lid' }"
+                 @click="selLid(box.id)">▣ Lid</div>
+            <div v-for="c in box.components" :key="c.id" class="ti k"
+                 :class="{ on: sel.cmpId === c.id, dis: c.enabled === false }"
+                 @click="selCmpPane(box.id, c.id)">
+              <span class="tn">⊞ {{ c.name }}</span>
+              <button class="x" @click.stop="rmCmp(box, c.id)">✕</button>
+            </div>
+            <button v-if="hasCmps(box)" class="addbtn sm" @click="addCmp(box)">+ section</button>
+          </div>
+        </div>
+        <button class="addbtn" @click="addBox">+ Add compartment</button>
+      </div>
+    </aside>
+
+    <!-- ── Editor ──────────────────────────────────────────────────────── -->
+    <main class="edit">
+      <!-- Settings -->
+      <div v-if="sel.pane === 'settings'" class="pane">
+        <h2>⚙ Global settings</h2>
+        <sform :groups="groups.global" :obj="project.settings"/>
+        <section class="fsec">
+          <h3 class="sec-t">Output filter</h3>
+          <div class="fld">
+            <label class="fld-l" title="Render only one compartment — much faster while iterating.">Isolate compartment<span class="tipdot">?</span></label>
+            <div class="fld-c">
+              <select v-model="project.settings.isolated_box">
+                <option value="">All compartments</option>
+                <option v-for="n in boxNames" :key="n" :value="n">{{ n }}</option>
+              </select>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- Box -->
+      <div v-else-if="sel.pane === 'box' && selBox" class="pane">
+        <div class="phead">
+          <input class="ptitle" v-model="selBox.name">
+          <label class="en"><input type="checkbox" v-model="selBox.enabled"> Enabled</label>
+        </div>
+        <section class="fsec">
+          <h3 class="sec-t">Type</h3>
+          <div class="seg big">
+            <button v-for="t in BOX_TYPES" :key="t" :class="{ on: selBox.type === t }"
+                    @click="selBox.type = t">{{ t }}</button>
+          </div>
+        </section>
+        <sform :groups="groups[selBox.type]" :obj="selBox"/>
+        <section v-if="selBox.type === 'DIVIDERS'" class="fsec">
+          <h3 class="sec-t">Divider tabs (one divider per entry)</h3>
+          <div v-for="(t, i) in selBox.tab_texts" :key="i" class="tabrow">
+            <input type="text" v-model="selBox.tab_texts[i]">
+            <button class="x" @click="selBox.tab_texts.splice(i, 1)">✕</button>
+          </div>
+          <button class="addbtn" @click="selBox.tab_texts.push('Tab ' + (selBox.tab_texts.length + 1))">+ Add divider</button>
+        </section>
+        <label-list v-if="hasLid(selBox)" :owner="selBox"
+          hint="Compartment labels engrave on the outer walls — use FRONT/BACK/LEFT/RIGHT/BOTTOM placement."/>
+      </div>
+
+      <!-- Lid -->
+      <div v-else-if="sel.pane === 'lid' && selBox" class="pane">
+        <h2>▣ Lid — {{ selBox.name }}</h2>
+        <label class="en blk"><input type="checkbox" v-model="selBox.lid.enabled"> Generate a lid for this compartment</label>
+        <template v-if="selBox.lid.enabled">
+          <sform :groups="groups.lid" :obj="selBox.lid"/>
+          <label-list :owner="selBox.lid" hint="Lid labels are engraved (or cut, on patterned lids) into the top."/>
+        </template>
+      </div>
+
+      <!-- Component -->
+      <div v-else-if="sel.pane === 'cmp' && selCmp" class="pane">
+        <div class="phead">
+          <input class="ptitle" v-model="selCmp.name">
+          <label class="en"><input type="checkbox" v-model="selCmp.enabled"> Enabled</label>
+        </div>
+        <sform :groups="groups.cmp" :obj="selCmp"/>
+        <label-list :owner="selCmp"
+          hint="Section labels engrave per cell. Use | and new lines in the text for per-cell grids."/>
+      </div>
+
+      <div v-else class="pane empty">
+        <div class="es"><div class="ei">🎲</div>
+          <h2>BIT Builder</h2><p>Select a compartment on the left, or add one to begin.</p></div>
+      </div>
+    </main>
+
+    <!-- ── Preview ─────────────────────────────────────────────────────── -->
+    <aside class="prev">
+      <div class="pv-bar">
+        <span class="pv-mode" :class="{ exact: exactMode }">{{ exactMode ? 'EXACT' : 'approximate' }}</span>
+        <button class="btn sm" @click="refit">⤢ Fit</button>
+        <button class="btn sm pri" @click="renderExact" :disabled="rendering || !openscad"
+                title="Run OpenSCAD for a faithful preview">{{ rendering ? '⏳' : '◉ Render exact' }}</button>
+      </div>
+      <div class="pv-canvas"><canvas ref="canvas"></canvas></div>
+      <div v-if="warnings.length" class="warns">
+        <div v-for="(w, i) in warnings" :key="i">⚠ {{ w }}</div>
+      </div>
+      <div v-if="scadError" class="errbox">{{ scadError }}</div>
+    </aside>
+  </div>
+
+  <!-- ── SCAD drawer ──────────────────────────────────────────────────── -->
+  <div v-if="showScad" class="scadp">
+    <div class="scadh">
+      <span>Generated SCAD</span>
+      <button class="btn sm" @click="copyScad">Copy</button>
+      <button class="btn sm" @click="downloadScad">Download</button>
+      <button class="btn sm" @click="showScad = false">✕</button>
+    </div>
+    <pre class="scadc">{{ scad }}</pre>
+  </div>
+
+  <div v-if="toast" class="toast" :class="toast.type">{{ toast.msg }}</div>
+  <input type="file" ref="file" accept=".json" style="display:none" @change="onFile">
+</div>
+
+<script type="module" src="/static/js/app.js"></script>
+</body>
+</html>
